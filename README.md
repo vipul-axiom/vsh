@@ -30,18 +30,19 @@ Run `./vsh` and type commands. Here is a real session, with the commands
 piped in so the output can be shown in one go:
 
 ```
-$ printf 'echo hello from vsh\ncd /tmp\npwd\nls /nonexistent\nnotacommand\ncd\npwd\nexit\n' | ./vsh
+$ printf 'echo hello from vsh\ncd /\npwd\nls /nonexistent\nnotacommand\ncd\npwd\nexit\n' | HOME=/tmp ./vsh
 vsh> hello from vsh
-vsh> vsh> /tmp
+vsh> vsh> /
 vsh> ls: cannot access '/nonexistent': No such file or directory
 vsh> notacommand: No such file or directory
-vsh> vsh> /home/box
+vsh> vsh> /tmp
 vsh>
 ```
 
 (The prompt is printed before each command is read, so when input is piped
 the output appears right after `vsh> `. `cd` prints nothing, so its prompt
-is followed directly by the next one.)
+is followed directly by the next one. `HOME=/tmp` is set here only so the
+example shows `cd` with no argument going to `$HOME`.)
 
 ## Limitations
 

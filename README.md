@@ -1,3 +1,5 @@
+[![CI](https://github.com/vipul-axiom/vsh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vipul-axiom/vsh/actions/workflows/ci.yml)
+
 # vsh
 
 A tiny Unix shell written in C99 with POSIX calls. I wrote it to learn how

@@ -13,6 +13,8 @@ then uses `fork`, `execvp`, and `waitpid` to run the command.
 - Words split on spaces and tabs
 - External commands run with `fork` / `execvp` / `waitpid`
 - Built-ins: `cd [dir]` (no argument goes to `$HOME`) and `exit`
+- Output redirection: `cmd > file` (or `cmd >file`) sends stdout to a file,
+  creating or truncating it
 - Errors reported with `perror`
 - Ctrl-D (end of input) exits cleanly
 
@@ -32,25 +34,28 @@ Run `./vsh` and type commands. Here is a real session, with the commands
 piped in so the output can be shown in one go:
 
 ```
-$ printf 'echo hello from vsh\ncd /\npwd\nls /nonexistent\nnotacommand\ncd\npwd\nexit\n' | HOME=/tmp ./vsh
+$ printf 'echo hello from vsh\ncd /\npwd\nls /nonexistent\nnotacommand\ncd\npwd\necho saved to a file > out.txt\ncat out.txt\nexit\n' | HOME=/tmp ./vsh
 vsh> hello from vsh
 vsh> vsh> /
 vsh> ls: cannot access '/nonexistent': No such file or directory
 vsh> notacommand: No such file or directory
 vsh> vsh> /tmp
+vsh> vsh> saved to a file
 vsh>
 ```
 
 (The prompt is printed before each command is read, so when input is piped
 the output appears right after `vsh> `. `cd` prints nothing, so its prompt
-is followed directly by the next one. `HOME=/tmp` is set here only so the
-example shows `cd` with no argument going to `$HOME`.)
+is followed directly by the next one, and so is `echo ... > out.txt`,
+because its output went into `out.txt` instead of the terminal; `cat`
+then shows it. `HOME=/tmp` is set here only so the example shows `cd`
+with no argument going to `$HOME`.)
 
 ## Limitations
 
 This is a learning project, so it is deliberately small:
 
-- No pipes (`|`) or redirection (`<`, `>`, `>>`)
+- No pipes (`|`), input redirection (`<`), or appending (`>>`); only `>` is supported
 - No quoting or escaping: `echo "a b"` passes `"a` and `b"` as two words
 - No environment variables (`$HOME`), globbing (`*.c`), or `~` expansion
 - No background jobs (`&`), job control, or signal handling

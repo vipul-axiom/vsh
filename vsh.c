@@ -2,8 +2,9 @@
  *
  * Reads a line, splits it on whitespace, and runs it. Two commands are
  * built in: cd and exit. Everything else is run with fork + execvp.
- * Output can be sent to a file with "cmd > file" (or "cmd >file").
- * There are no pipes, input redirection, quoting, or variables.
+ * Output can be sent to a file with "cmd > file" (or "cmd >file"), and
+ * two commands can be joined with one pipe: "cmd1 | cmd2".
+ * There is no input redirection, quoting, or variables.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -104,6 +105,16 @@ static int apply_redirect(char **args) {
     return 0;
 }
 
+/* In a child process: set up any "> file", then replace this process
+ * with the program in args. Never returns. */
+static void exec_child(char **args) {
+    if (apply_redirect(args) != 0) _exit(1);
+    if (args[0] == NULL) _exit(0);  /* just "> file": file is created */
+    execvp(args[0], args);
+    perror(args[0]);  /* only reached if execvp failed */
+    _exit(127);
+}
+
 /* Run an external program and wait for it to finish. */
 static void run_program(char **args) {
     pid_t pid = fork();
@@ -111,15 +122,94 @@ static void run_program(char **args) {
         perror("vsh: fork");
         return;
     }
-    if (pid == 0) {
-        if (apply_redirect(args) != 0) _exit(1);
-        if (args[0] == NULL) _exit(0);  /* just "> file": file is created */
-        execvp(args[0], args);
-        perror(args[0]);  /* only reached if execvp failed */
-        _exit(127);
-    }
+    if (pid == 0) exec_child(args);
     int status;
     if (waitpid(pid, &status, 0) < 0) perror("vsh: waitpid");
+}
+
+/* Look for a "|" word in args. Returns its index, -1 if there is none,
+ * or -2 if there is more than one (after printing an error). */
+static int find_pipe(char **args) {
+    int pos = -1;
+    for (int i = 0; args[i]; i++) {
+        if (strcmp(args[i], "|") == 0) {
+            if (pos != -1) {
+                fprintf(stderr, "vsh: only one '|' is supported\n");
+                return -2;
+            }
+            pos = i;
+        }
+    }
+    return pos;
+}
+
+/* Run "cmd1 | cmd2". pos is the index of the "|" in args. The output of
+ * the first command goes into a pipe, and the second reads from it. */
+static void run_pipeline(char **args, int pos) {
+    char **left = args;
+    char **right = args + pos + 1;
+    args[pos] = NULL;  /* end the first command where the "|" was */
+
+    if (left[0] == NULL) {
+        fprintf(stderr, "vsh: missing command before '|'\n");
+        return;
+    }
+    if (right[0] == NULL) {
+        fprintf(stderr, "vsh: missing command after '|'\n");
+        return;
+    }
+
+    int fds[2];  /* fds[0] is the read end, fds[1] the write end */
+    if (pipe(fds) != 0) {
+        perror("vsh: pipe");
+        return;
+    }
+
+    pid_t first = fork();
+    if (first < 0) {
+        perror("vsh: fork");
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    if (first == 0) {
+        /* First child: stdout goes into the pipe. */
+        if (dup2(fds[1], STDOUT_FILENO) < 0) {
+            perror("vsh: dup2");
+            _exit(1);
+        }
+        close(fds[0]);
+        close(fds[1]);
+        exec_child(left);
+    }
+
+    pid_t second = fork();
+    if (second < 0) {
+        perror("vsh: fork");
+        close(fds[0]);
+        close(fds[1]);
+        waitpid(first, NULL, 0);
+        return;
+    }
+    if (second == 0) {
+        /* Second child: stdin comes from the pipe. */
+        if (dup2(fds[0], STDIN_FILENO) < 0) {
+            perror("vsh: dup2");
+            _exit(1);
+        }
+        close(fds[0]);
+        close(fds[1]);
+        exec_child(right);
+    }
+
+    /* The parent must close both ends too. If the write end stayed open
+     * here, the second command would never see end of input and hang. */
+    close(fds[0]);
+    close(fds[1]);
+
+    int status;
+    if (waitpid(first, &status, 0) < 0) perror("vsh: waitpid");
+    if (waitpid(second, &status, 0) < 0) perror("vsh: waitpid");
 }
 
 int main(void) {
@@ -141,8 +231,13 @@ int main(void) {
             break;
         }
 
+        int pos = args[0] ? find_pipe(args) : -1;
         if (args[0] == NULL) {
             /* empty line: nothing to do */
+        } else if (pos == -2) {
+            /* more than one '|': error already printed */
+        } else if (pos >= 0) {
+            run_pipeline(args, pos);  /* built-ins are not run in a pipeline */
         } else if (strcmp(args[0], "exit") == 0) {
             free(args);
             break;

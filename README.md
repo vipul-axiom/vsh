@@ -15,6 +15,9 @@ then uses `fork`, `execvp`, and `waitpid` to run the command.
 - Built-ins: `cd [dir]` (no argument goes to `$HOME`) and `exit`
 - Output redirection: `cmd > file` (or `cmd >file`) sends stdout to a file,
   creating or truncating it
+- A single pipe: `cmd1 | cmd2` sends the output of `cmd1` into `cmd2`
+  (`>` works with it too, e.g. `ls | wc -l > n.txt`); the `|` must be a
+  separate word, with spaces around it
 - Errors reported with `perror`
 - Ctrl-D (end of input) exits cleanly
 
@@ -34,13 +37,16 @@ Run `./vsh` and type commands. Here is a real session, with the commands
 piped in so the output can be shown in one go:
 
 ```
-$ printf 'echo hello from vsh\ncd /\npwd\nls /nonexistent\nnotacommand\ncd\npwd\necho saved to a file > out.txt\ncat out.txt\nexit\n' | HOME=/tmp ./vsh
+$ printf 'echo hello from vsh\ncd /\npwd\nls /nonexistent\nnotacommand\ncd\npwd\necho saved to a file > out.txt\ncat out.txt\necho one two three | wc -w\necho one two three | wc -w > count.txt\ncat count.txt\n| wc -l\nexit\n' | HOME=/tmp ./vsh
 vsh> hello from vsh
 vsh> vsh> /
 vsh> ls: cannot access '/nonexistent': No such file or directory
 vsh> notacommand: No such file or directory
 vsh> vsh> /tmp
 vsh> vsh> saved to a file
+vsh> 3
+vsh> vsh> 3
+vsh> vsh: missing command before '|'
 vsh>
 ```
 
@@ -48,14 +54,18 @@ vsh>
 the output appears right after `vsh> `. `cd` prints nothing, so its prompt
 is followed directly by the next one, and so is `echo ... > out.txt`,
 because its output went into `out.txt` instead of the terminal; `cat`
-then shows it. `HOME=/tmp` is set here only so the example shows `cd`
+then shows it. The pipe `echo one two three | wc -w` counts the words
+coming out of `echo`, and with `> count.txt` the count goes into the file
+instead. `HOME=/tmp` is set here only so the example shows `cd`
 with no argument going to `$HOME`.)
 
 ## Limitations
 
 This is a learning project, so it is deliberately small:
 
-- No pipes (`|`), input redirection (`<`), or appending (`>>`); only `>` is supported
+- Only one pipe per line (`a | b | c` is an error), and no input redirection
+  (`<`) or appending (`>>`); only `>` is supported
+- Built-ins (`cd`, `exit`) are not run inside a pipeline
 - No quoting or escaping: `echo "a b"` passes `"a` and `b"` as two words
 - No environment variables (`$HOME`), globbing (`*.c`), or `~` expansion
 - No background jobs (`&`), job control, or signal handling

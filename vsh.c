@@ -2,9 +2,10 @@
  *
  * Reads a line, splits it on whitespace, and runs it. Two commands are
  * built in: cd and exit. Everything else is run with fork + execvp.
- * Output can be sent to a file with "cmd > file" (or "cmd >file"), and
- * two commands can be joined with one pipe: "cmd1 | cmd2".
- * There is no input redirection, quoting, or variables.
+ * Input can come from a file with "cmd < file", output can go to a file
+ * with "cmd > file" or be added to the end of one with "cmd >> file",
+ * and two commands can be joined with one pipe: "cmd1 | cmd2".
+ * There is no quoting and there are no variables.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -56,39 +57,60 @@ static void builtin_cd(char **args) {
     if (chdir(dir) != 0) perror("vsh: cd");
 }
 
-/* Handle output redirection in the child process. Looks for "> file" or
- * ">file" in args, opens the file, and makes it the child's stdout. The
- * ">" and the file name are removed from args so the program never sees
- * them. If there is more than one, the last one wins (like sh).
- * Returns 0 on success, -1 on error (after printing a message). */
+/* Handle redirection in the child process. Looks for these in args:
+ *   "< file"  or "<file"   read stdin from file
+ *   "> file"  or ">file"   write stdout to file (created or truncated)
+ *   ">> file" or ">>file"  append stdout to file (created if missing)
+ * Each file is opened and put in place of stdin or stdout with dup2.
+ * The operator and the file name are removed from args so the program
+ * never sees them. If there is more than one of a kind, the last one
+ * wins (like sh). Returns 0 on success, -1 on error (after a message). */
 static int apply_redirect(char **args) {
     for (int i = 0; args[i]; i++) {
-        const char *file;
-        int skip;  /* how many words to remove from args */
+        const char *word = args[i];
+        const char *op;  /* the operator: "<", ">" or ">>" */
+        int flags;       /* how to open the file */
+        int target;      /* STDIN_FILENO or STDOUT_FILENO */
 
-        if (strcmp(args[i], ">") == 0) {
-            file = args[i + 1];
-            skip = 2;
-            if (!file) {
-                fprintf(stderr, "vsh: missing file name after '>'\n");
-                return -1;
-            }
-        } else if (args[i][0] == '>' && args[i][1] == '>') {
-            fprintf(stderr, "vsh: '>>' (append) is not supported\n");
-            return -1;
-        } else if (args[i][0] == '>') {
-            file = args[i] + 1;  /* ">file": name follows the '>' */
-            skip = 1;
+        /* Check ">>" before ">", or ">>file" would be read as ">" with
+         * the file name ">file". */
+        if (word[0] == '>' && word[1] == '>') {
+            op = ">>";
+            flags = O_WRONLY | O_CREAT | O_APPEND;
+            target = STDOUT_FILENO;
+        } else if (word[0] == '>') {
+            op = ">";
+            flags = O_WRONLY | O_CREAT | O_TRUNC;
+            target = STDOUT_FILENO;
+        } else if (word[0] == '<') {
+            op = "<";
+            flags = O_RDONLY;
+            target = STDIN_FILENO;
         } else {
             continue;
         }
 
-        int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        const char *file;
+        int skip;  /* how many words to remove from args */
+        size_t len = strlen(op);
+        if (word[len] != '\0') {
+            file = word + len;  /* "<file": name follows the operator */
+            skip = 1;
+        } else {
+            file = args[i + 1];  /* "< file": name is the next word */
+            skip = 2;
+            if (!file) {
+                fprintf(stderr, "vsh: missing file name after '%s'\n", op);
+                return -1;
+            }
+        }
+
+        int fd = open(file, flags, 0644);  /* 0644 is only used if created */
         if (fd < 0) {
             fprintf(stderr, "vsh: %s: %s\n", file, strerror(errno));
             return -1;
         }
-        if (dup2(fd, STDOUT_FILENO) < 0) {
+        if (dup2(fd, target) < 0) {
             perror("vsh: dup2");
             close(fd);
             return -1;
@@ -105,8 +127,8 @@ static int apply_redirect(char **args) {
     return 0;
 }
 
-/* In a child process: set up any "> file", then replace this process
- * with the program in args. Never returns. */
+/* In a child process: set up any "<", ">" or ">>" redirection, then
+ * replace this process with the program in args. Never returns. */
 static void exec_child(char **args) {
     if (apply_redirect(args) != 0) _exit(1);
     if (args[0] == NULL) _exit(0);  /* just "> file": file is created */

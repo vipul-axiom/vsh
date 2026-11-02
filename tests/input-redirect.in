@@ -1,0 +1,3 @@
+printf c\nb\na\n > in.txt
+sort < in.txt
+sort <in.txt

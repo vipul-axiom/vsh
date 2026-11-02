@@ -1,0 +1,6 @@
+echo x > a.txt
+echo y > b.txt
+cat < a.txt < b.txt
+echo z > c.txt > d.txt
+cat d.txt
+cat c.txt

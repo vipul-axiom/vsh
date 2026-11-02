@@ -1,0 +1,4 @@
+printf c\nb\na\n > in.txt
+echo sorted: > log.txt
+cat < in.txt | sort >> log.txt
+cat log.txt

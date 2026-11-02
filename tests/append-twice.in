@@ -1,0 +1,6 @@
+echo one >> log.txt
+echo two >>log.txt
+cat log.txt
+echo >>
+echo fresh > log.txt
+cat log.txt

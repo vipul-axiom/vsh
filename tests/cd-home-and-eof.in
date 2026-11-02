@@ -1,0 +1,5 @@
+echo home > f.txt
+cd /
+pwd
+cd
+cat f.txt

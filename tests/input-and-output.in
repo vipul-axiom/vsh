@@ -1,0 +1,5 @@
+printf c\nb\na\n > in.txt
+sort < in.txt > out.txt
+cat out.txt
+sort >sorted.txt <in.txt
+cat sorted.txt

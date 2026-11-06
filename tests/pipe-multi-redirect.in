@@ -1,0 +1,3 @@
+printf c\nb\na\na\n > in.txt
+cat < in.txt | sort | uniq | wc -l > n.txt
+cat n.txt

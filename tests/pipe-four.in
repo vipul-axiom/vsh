@@ -1,0 +1,1 @@
+printf a\nb\nc\nd\n | cat | cat | wc -l

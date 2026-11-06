@@ -4,7 +4,7 @@
  * built in: cd and exit. Everything else is run with fork + execvp.
  * Input can come from a file with "cmd < file", output can go to a file
  * with "cmd > file" or be added to the end of one with "cmd >> file",
- * and two commands can be joined with one pipe: "cmd1 | cmd2".
+ * and commands can be joined with pipes: "cmd1 | cmd2 | cmd3".
  * There is no quoting and there are no variables.
  */
 #define _POSIX_C_SOURCE 200809L
@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #define DELIMS " \t\r\n\a"
+#define MAX_STAGES 64  /* max commands in one pipeline (63 pipes) */
 
 /* Split line into a NULL-terminated array of words. The words point
  * into line, which strtok modifies. Returns NULL if out of memory. */
@@ -59,7 +60,7 @@ static void builtin_cd(char **args) {
 
 /* Handle redirection in the child process. Looks for these in args:
  *   "< file"  or "<file"   read stdin from file
- *   "> file"  or ">file"   write stdout to file (created or truncated)
+ *   "> file"  or ">file"   write stdout to a file (created or truncated)
  *   ">> file" or ">>file"  append stdout to file (created if missing)
  * Each file is opened and put in place of stdin or stdout with dup2.
  * The operator and the file name are removed from args so the program
@@ -149,89 +150,103 @@ static void run_program(char **args) {
     if (waitpid(pid, &status, 0) < 0) perror("vsh: waitpid");
 }
 
-/* Look for a "|" word in args. Returns its index, -1 if there is none,
- * or -2 if there is more than one (after printing an error). */
-static int find_pipe(char **args) {
-    int pos = -1;
+/* True if args has at least one "|" word. */
+static int has_pipe(char **args) {
     for (int i = 0; args[i]; i++) {
-        if (strcmp(args[i], "|") == 0) {
-            if (pos != -1) {
-                fprintf(stderr, "vsh: only one '|' is supported\n");
-                return -2;
-            }
-            pos = i;
-        }
+        if (strcmp(args[i], "|") == 0) return 1;
     }
-    return pos;
+    return 0;
 }
 
-/* Run "cmd1 | cmd2". pos is the index of the "|" in args. The output of
- * the first command goes into a pipe, and the second reads from it. */
-static void run_pipeline(char **args, int pos) {
-    char **left = args;
-    char **right = args + pos + 1;
-    args[pos] = NULL;  /* end the first command where the "|" was */
+/* Close every end of every pipe in fds[0 .. npipes-1]. */
+static void close_all_pipes(int fds[][2], int npipes) {
+    for (int i = 0; i < npipes; i++) {
+        close(fds[i][0]);
+        close(fds[i][1]);
+    }
+}
 
-    if (left[0] == NULL) {
-        fprintf(stderr, "vsh: missing command before '|'\n");
-        return;
-    }
-    if (right[0] == NULL) {
-        fprintf(stderr, "vsh: missing command after '|'\n");
-        return;
-    }
+/* Run "cmd1 | cmd2 | ... | cmdN". Splits args at each "|", forks one
+ * child per command, and connects them with N-1 pipes. Each child still
+ * applies its own "<", ">" or ">>" with apply_redirect. Built-ins are
+ * not run here; the caller only reaches this for a line that has "|". */
+static void run_pipeline(char **args) {
+    char **stage[MAX_STAGES];
+    int n = 0;  /* number of commands in the pipeline */
 
-    int fds[2];  /* fds[0] is the read end, fds[1] the write end */
-    if (pipe(fds) != 0) {
-        perror("vsh: pipe");
-        return;
-    }
-
-    pid_t first = fork();
-    if (first < 0) {
-        perror("vsh: fork");
-        close(fds[0]);
-        close(fds[1]);
-        return;
-    }
-    if (first == 0) {
-        /* First child: stdout goes into the pipe. */
-        if (dup2(fds[1], STDOUT_FILENO) < 0) {
-            perror("vsh: dup2");
-            _exit(1);
+    stage[n++] = args;
+    for (int i = 0; args[i]; i++) {
+        if (strcmp(args[i], "|") == 0) {
+            args[i] = NULL;  /* end this command where the "|" was */
+            if (n >= MAX_STAGES) {
+                fprintf(stderr, "vsh: too many pipes\n");
+                return;
+            }
+            stage[n++] = &args[i + 1];
         }
-        close(fds[0]);
-        close(fds[1]);
-        exec_child(left);
     }
 
-    pid_t second = fork();
-    if (second < 0) {
-        perror("vsh: fork");
-        close(fds[0]);
-        close(fds[1]);
-        waitpid(first, NULL, 0);
+    /* Every stage must have a command. An empty one before a "|" or
+     * after a "|" (including in the middle: "a | | b") is an error. */
+    for (int i = 0; i < n; i++) {
+        if (stage[i][0] != NULL) continue;
+        if (i == 0)
+            fprintf(stderr, "vsh: missing command before '|'\n");
+        else
+            fprintf(stderr, "vsh: missing command after '|'\n");
         return;
     }
-    if (second == 0) {
-        /* Second child: stdin comes from the pipe. */
-        if (dup2(fds[0], STDIN_FILENO) < 0) {
-            perror("vsh: dup2");
-            _exit(1);
+
+    int npipes = n - 1;
+    int fds[MAX_STAGES - 1][2];
+    for (int i = 0; i < npipes; i++) {
+        if (pipe(fds[i]) != 0) {
+            perror("vsh: pipe");
+            close_all_pipes(fds, i);  /* close any already created */
+            return;
         }
-        close(fds[0]);
-        close(fds[1]);
-        exec_child(right);
     }
 
-    /* The parent must close both ends too. If the write end stayed open
-     * here, the second command would never see end of input and hang. */
-    close(fds[0]);
-    close(fds[1]);
+    pid_t pids[MAX_STAGES];
+    int started = 0;
+    for (int i = 0; i < n; i++) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror("vsh: fork");
+            close_all_pipes(fds, npipes);
+            for (int j = 0; j < started; j++) waitpid(pids[j], NULL, 0);
+            return;
+        }
+        if (pid == 0) {
+            /* Child i: read from the previous pipe (if any), write to the
+             * next pipe (if any). Then close every pipe end we still hold
+             * so nothing is left open by accident. */
+            if (i > 0) {
+                if (dup2(fds[i - 1][0], STDIN_FILENO) < 0) {
+                    perror("vsh: dup2");
+                    _exit(1);
+                }
+            }
+            if (i < n - 1) {
+                if (dup2(fds[i][1], STDOUT_FILENO) < 0) {
+                    perror("vsh: dup2");
+                    _exit(1);
+                }
+            }
+            close_all_pipes(fds, npipes);
+            exec_child(stage[i]);
+        }
+        pids[started++] = pid;
+    }
+
+    /* Parent must close both ends of every pipe. If a write end stayed
+     * open here, the next command would never see end of input and hang. */
+    close_all_pipes(fds, npipes);
 
     int status;
-    if (waitpid(first, &status, 0) < 0) perror("vsh: waitpid");
-    if (waitpid(second, &status, 0) < 0) perror("vsh: waitpid");
+    for (int i = 0; i < started; i++) {
+        if (waitpid(pids[i], &status, 0) < 0) perror("vsh: waitpid");
+    }
 }
 
 int main(void) {
@@ -253,13 +268,10 @@ int main(void) {
             break;
         }
 
-        int pos = args[0] ? find_pipe(args) : -1;
         if (args[0] == NULL) {
             /* empty line: nothing to do */
-        } else if (pos == -2) {
-            /* more than one '|': error already printed */
-        } else if (pos >= 0) {
-            run_pipeline(args, pos);  /* built-ins are not run in a pipeline */
+        } else if (has_pipe(args)) {
+            run_pipeline(args);  /* built-ins are not run in a pipeline */
         } else if (strcmp(args[0], "exit") == 0) {
             free(args);
             break;

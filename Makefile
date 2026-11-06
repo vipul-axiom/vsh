@@ -1,5 +1,5 @@
 CC = cc
-CFLAGS = -Wall -Wextra -std=c99 -pedantic -O2
+CFLAGS = -Wall -Wextra -Werror -std=c99 -pedantic -O2
 # Stop a test after 5 seconds if it hangs (e.g. a pipe left open).
 TIMEOUT = $(shell command -v timeout >/dev/null 2>&1 && echo timeout 5)
 

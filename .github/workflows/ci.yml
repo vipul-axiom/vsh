@@ -7,9 +7,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: make
+        run: make CC=${{ matrix.compiler }}
       - name: Test
-        run: make test
+        run: make CC=${{ matrix.compiler }} test
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with ASan/UBSan
+        run: make CC=gcc CFLAGS="-Wall -Wextra -Werror -std=c99 -pedantic -O1 -fsanitize=address,undefined"
+      - name: Test with ASan/UBSan
+        run: make CC=gcc CFLAGS="-Wall -Wextra -Werror -std=c99 -pedantic -O1 -fsanitize=address,undefined" test

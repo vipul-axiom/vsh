@@ -20,10 +20,10 @@ then uses `fork`, `execvp`, and `waitpid` to run the command.
 - Input redirection: `cmd < file` (or `cmd <file`) makes the file the
   command's stdin; they can be combined, e.g. `sort < in.txt > out.txt`,
   and if the same kind is given twice the last one wins
-- A single pipe: `cmd1 | cmd2` sends the output of `cmd1` into `cmd2`;
-  redirection works with it too, e.g. `cat < in.txt | sort >> log.txt`
-  (`<` on the first command, `>` or `>>` on the second); the `|` must be
-  a separate word, with spaces around it
+- Pipes: `cmd1 | cmd2 | cmd3` sends stdout of each command into the next
+  (any number of stages); redirection works per command too, e.g.
+  `cat < in.txt | sort | uniq >> log.txt`; the `|` must be a separate
+  word, with spaces around it
 - Errors reported with `perror`
 - Ctrl-D (end of input) exits cleanly
 
@@ -102,7 +102,6 @@ add a new `.in` / `.expected` pair; the Makefile picks it up on its own.
 
 This is a learning project, so it is deliberately small:
 
-- Only one pipe per line: `a | b | c` is an error
 - The `|` needs spaces around it: `ls|wc` is read as one word
 - No built-ins in pipelines: `cd` and `exit` are not run inside one
 - No stderr redirection (`2>`) or here-documents (`<<`)
@@ -120,7 +119,8 @@ MIT. See [LICENSE](LICENSE).
 - Starting programs with fork and execvp, and waiting for them with waitpid.
 - Redirecting input and output with open and dup2.
 - Connecting two commands with pipe, and closing unused pipe ends so the reader doesn't hang.
+- Chaining more than one pipe on a line, and managing every pipe end in the parent and in each child so nothing hangs.
 
 ## Next up
 
-- Support more than one pipe in a line (cmd1 | cmd2 | cmd3).
+- Add stderr redirection (2>).

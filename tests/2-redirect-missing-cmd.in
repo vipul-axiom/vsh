@@ -1,0 +1,4 @@
+2> err.txt
+ls err.txt
+echo hi 2>
+echo hi 2> | cat

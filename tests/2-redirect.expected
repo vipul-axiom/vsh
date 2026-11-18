@@ -1,0 +1,9 @@
+vsh> vsh> 1
+vsh> vsh> 1
+vsh> vsh> nosuchcommand_vsh: No such file or directory
+vsh> kept
+vsh> 0
+vsh> vsh> 2
+vsh> piped
+vsh> nosuchcommand_vsh: No such file or directory
+vsh> 

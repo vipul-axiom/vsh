@@ -1,0 +1,8 @@
+echo one two|wc -w
+echo pear>f.txt
+echo apple>>f.txt
+sort<f.txt>s.txt
+cat s.txt
+cat<f.txt|sort|head -n 1
+echo a2>x.txt
+cat x.txt

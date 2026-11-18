@@ -11,6 +11,12 @@ then uses `fork`, `execvp`, and `waitpid` to run the command.
 - A `vsh> ` prompt loop
 - Line reading with `getline`
 - Words split on spaces and tabs
+- Operators without spaces: `|`, `<`, `>`, `>>`, `2>` and `2>>` are split
+  out on their own, so `ls|wc`, `sort<in.txt>out.txt` and `echo hi>>f`
+  work (`2>` is only an operator when the `2` begins a word)
+- Simple double quotes: `echo "a b"` passes `a b` as one word, and
+  operators inside quotes are plain text (`echo "a|b"` prints `a|b`); an
+  unclosed quote prints `vsh: missing closing '"'` and the line is skipped
 - External commands run with `fork` / `execvp` / `waitpid`
 - Built-ins: `cd [dir]` (no argument goes to `$HOME`) and `exit`
 - Output redirection: `cmd > file` (or `cmd >file`) sends stdout to a file,
@@ -20,10 +26,11 @@ then uses `fork`, `execvp`, and `waitpid` to run the command.
 - Input redirection: `cmd < file` (or `cmd <file`) makes the file the
   command's stdin; they can be combined, e.g. `sort < in.txt > out.txt`,
   and if the same kind is given twice the last one wins
+- Stderr redirection: `cmd 2> file` (or `cmd 2>file`) sends error
+  messages to a file, creating or truncating it; `cmd 2>> file` appends
 - Pipes: `cmd1 | cmd2 | cmd3` sends stdout of each command into the next
   (any number of stages); redirection works per command too, e.g.
-  `cat < in.txt | sort | uniq >> log.txt`; the `|` must be a separate
-  word, with spaces around it
+  `cat < in.txt | sort | uniq >> log.txt`
 - Errors reported with `perror`
 - Ctrl-D (end of input) exits cleanly
 
@@ -102,10 +109,9 @@ add a new `.in` / `.expected` pair; the Makefile picks it up on its own.
 
 This is a learning project, so it is deliberately small:
 
-- The `|` needs spaces around it: `ls|wc` is read as one word
 - No built-ins in pipelines: `cd` and `exit` are not run inside one
-- No stderr redirection (`2>`) or here-documents (`<<`)
-- No quoting or escaping: `echo "a b"` passes `"a` and `b"` as two words
+- No here-documents (`<<`)
+- Only simple double quotes: no single quotes or backslash escapes
 - No environment variables (`$HOME`), globbing (`*.c`), or `~` expansion
 - No background jobs (`&`), job control, or signal handling
 - No history or line editing
@@ -120,7 +126,8 @@ MIT. See [LICENSE](LICENSE).
 - Redirecting input and output with open and dup2.
 - Connecting two commands with pipe, and closing unused pipe ends so the reader doesn't hang.
 - Chaining more than one pipe on a line, and managing every pipe end in the parent and in each child so nothing hangs.
+- Writing a small tokenizer by hand: walking the line one character at a time to split out words, operators and quoted text, instead of using strtok.
 
 ## Next up
 
-- Add stderr redirection (2>).
+- Add single quotes and backslash escapes.

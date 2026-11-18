@@ -1,11 +1,15 @@
 /* vsh: a very small Unix shell.
  *
- * Reads a line, splits it on whitespace, and runs it. Two commands are
- * built in: cd and exit. Everything else is run with fork + execvp.
- * Input can come from a file with "cmd < file", output can go to a file
- * with "cmd > file" or be added to the end of one with "cmd >> file",
- * and commands can be joined with pipes: "cmd1 | cmd2 | cmd3".
- * There is no quoting and there are no variables.
+ * Reads a line, splits it into words and operators, and runs it. Two
+ * commands are built in: cd and exit. Everything else is run with
+ * fork + execvp. Input can come from a file with "cmd < file", output can
+ * go to a file with "cmd > file" or be added to the end of one with
+ * "cmd >> file", errors (stderr) can go to a file with "cmd 2> file" or
+ * "cmd 2>> file", and commands can be joined with pipes:
+ * "cmd1 | cmd2 | cmd3". Operators don't need spaces around them
+ * ("ls|wc" works). Simple double quotes keep spaces and operators inside
+ * one word: echo "a | b". There are no single quotes, no backslash
+ * escapes and no variables.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -22,27 +26,126 @@
 #define DELIMS " \t\r\n\a"
 #define MAX_STAGES 64  /* max commands in one pipeline (63 pipes) */
 
-/* Split line into a NULL-terminated array of words. The words point
- * into line, which strtok modifies. Returns NULL if out of memory. */
-static char **split_line(char *line) {
+/* The operators. The tokenizer puts a pointer to one of these strings
+ * into the word list, never a copy, so later code can test
+ * "args[i] == OP_PIPE" and tell a real | apart from a quoted "|" word,
+ * which is just text. */
+static char OP_PIPE[] = "|";
+static char OP_IN[] = "<";
+static char OP_OUT[] = ">";
+static char OP_APPEND[] = ">>";
+static char OP_ERR[] = "2>";
+static char OP_ERR_APPEND[] = "2>>";
+
+/* True if word is one of the operators above (not a quoted look-alike). */
+static int is_operator(const char *word) {
+    return word == OP_PIPE || word == OP_IN || word == OP_OUT ||
+           word == OP_APPEND || word == OP_ERR || word == OP_ERR_APPEND;
+}
+
+/* If line[i] starts an operator, return it and store its length in *len.
+ * Otherwise return NULL. "2>" only counts when the 2 begins a word, so
+ * this is only called at the start of a new token. */
+static char *match_operator(const char *line, size_t i, size_t *len) {
+    char c = line[i];
+    if (c == '|') { *len = 1; return OP_PIPE; }
+    if (c == '<') { *len = 1; return OP_IN; }
+    /* Check ">>" before ">", or ">>" would be read as two ">". */
+    if (c == '>' && line[i + 1] == '>') { *len = 2; return OP_APPEND; }
+    if (c == '>') { *len = 1; return OP_OUT; }
+    if (c == '2' && line[i + 1] == '>') {
+        if (line[i + 2] == '>') { *len = 3; return OP_ERR_APPEND; }
+        *len = 2;
+        return OP_ERR;
+    }
+    return NULL;
+}
+
+/* Add one word to the growing list *args (which has *n words and room
+ * for *cap). Keeps room for the final NULL. Returns -1 if out of memory. */
+static int push_word(char ***args, size_t *n, size_t *cap, char *word) {
+    if (*n + 1 >= *cap) {
+        size_t newcap = *cap * 2;
+        char **next = realloc(*args, newcap * sizeof **args);
+        if (!next) return -1;
+        *args = next;
+        *cap = newcap;
+    }
+    (*args)[(*n)++] = word;
+    return 0;
+}
+
+/* Split line into a NULL-terminated list of words and operators.
+ *
+ * A word ends at a space or tab, or where an operator (| < > >> 2> 2>>)
+ * starts, so "ls|wc" is three tokens. Inside double quotes, spaces and
+ * operator characters are ordinary text, and the quotes themselves are
+ * dropped: echo "a b" gives the one word: a b.
+ *
+ * The words are copied, without their quotes, into one new buffer, which
+ * is stored in *bufp. Each word is at most as long as the line and needs
+ * one '\0', so twice the line length plus one is always enough. The
+ * caller frees *bufp and the returned list (but not the words one by
+ * one). Returns NULL, with nothing left to free, if out of memory or if a
+ * quote is never closed; *syntax_error tells which (1 = bad quote, after
+ * a message). */
+static char **split_line(const char *line, char **bufp, int *syntax_error) {
+    *bufp = NULL;
+    *syntax_error = 0;
+
     size_t cap = 8, n = 0;
     char **args = malloc(cap * sizeof *args);
-    if (!args) return NULL;
+    char *buf = malloc(2 * strlen(line) + 1);
+    char *out = buf;  /* where the next word character is written */
+    size_t i = 0;
+    if (!args || !buf) goto fail;
 
-    for (char *tok = strtok(line, DELIMS); tok; tok = strtok(NULL, DELIMS)) {
-        if (n + 1 >= cap) {  /* leave room for the final NULL */
-            cap *= 2;
-            char **next = realloc(args, cap * sizeof *args);
-            if (!next) {
-                free(args);
-                return NULL;
-            }
-            args = next;
+    while (line[i] != '\0') {
+        if (strchr(DELIMS, line[i])) {  /* skip spaces between tokens */
+            i++;
+            continue;
         }
-        args[n++] = tok;
+
+        size_t len;
+        char *op = match_operator(line, i, &len);
+        if (op) {
+            if (push_word(&args, &n, &cap, op) != 0) goto fail;
+            i += len;
+            continue;
+        }
+
+        /* A word: copy characters until a space or an operator outside
+         * quotes. A quote just switches in_quote on or off. */
+        char *word = out;
+        int in_quote = 0;
+        while (line[i] != '\0') {
+            char c = line[i];
+            if (c == '"') {
+                in_quote = !in_quote;
+            } else if (!in_quote && (strchr(DELIMS, c) || c == '|' ||
+                                     c == '<' || c == '>')) {
+                break;
+            } else {
+                *out++ = c;
+            }
+            i++;
+        }
+        if (in_quote) {
+            fprintf(stderr, "vsh: missing closing '\"'\n");
+            *syntax_error = 1;
+            goto fail;
+        }
+        *out++ = '\0';
+        if (push_word(&args, &n, &cap, word) != 0) goto fail;
     }
     args[n] = NULL;
+    *bufp = buf;
     return args;
+
+fail:
+    free(args);
+    free(buf);
+    return NULL;
 }
 
 /* Built-in cd. With no argument, go to $HOME. */
@@ -59,51 +162,46 @@ static void builtin_cd(char **args) {
 }
 
 /* Handle redirection in the child process. Looks for these in args:
- *   "< file"  or "<file"   read stdin from file
- *   "> file"  or ">file"   write stdout to a file (created or truncated)
- *   ">> file" or ">>file"  append stdout to file (created if missing)
- * Each file is opened and put in place of stdin or stdout with dup2.
- * The operator and the file name are removed from args so the program
- * never sees them. If there is more than one of a kind, the last one
- * wins (like sh). Returns 0 on success, -1 on error (after a message). */
+ *   "< file"    read stdin from file
+ *   "> file"    write stdout to a file (created or truncated)
+ *   ">> file"   append stdout to file (created if missing)
+ *   "2> file"   write stderr to a file (created or truncated)
+ *   "2>> file"  append stderr to file (created if missing)
+ * The tokenizer has already split "<file" into "<" and "file", so the
+ * file name is always the next word. Each file is opened and put in
+ * place of stdin, stdout or stderr with dup2. The operator and the file
+ * name are removed from args so the program never sees them. If there is
+ * more than one of a kind, the last one wins (like sh). Returns 0 on
+ * success, -1 on error (after a message). */
 static int apply_redirect(char **args) {
     for (int i = 0; args[i]; i++) {
-        const char *word = args[i];
-        const char *op;  /* the operator: "<", ">" or ">>" */
-        int flags;       /* how to open the file */
-        int target;      /* STDIN_FILENO or STDOUT_FILENO */
+        const char *op = args[i];
+        int flags;   /* how to open the file */
+        int target;  /* STDIN_FILENO, STDOUT_FILENO or STDERR_FILENO */
 
-        /* Check ">>" before ">", or ">>file" would be read as ">" with
-         * the file name ">file". */
-        if (word[0] == '>' && word[1] == '>') {
-            op = ">>";
-            flags = O_WRONLY | O_CREAT | O_APPEND;
-            target = STDOUT_FILENO;
-        } else if (word[0] == '>') {
-            op = ">";
-            flags = O_WRONLY | O_CREAT | O_TRUNC;
-            target = STDOUT_FILENO;
-        } else if (word[0] == '<') {
-            op = "<";
+        if (op == OP_IN) {
             flags = O_RDONLY;
             target = STDIN_FILENO;
+        } else if (op == OP_OUT) {
+            flags = O_WRONLY | O_CREAT | O_TRUNC;
+            target = STDOUT_FILENO;
+        } else if (op == OP_APPEND) {
+            flags = O_WRONLY | O_CREAT | O_APPEND;
+            target = STDOUT_FILENO;
+        } else if (op == OP_ERR) {
+            flags = O_WRONLY | O_CREAT | O_TRUNC;
+            target = STDERR_FILENO;
+        } else if (op == OP_ERR_APPEND) {
+            flags = O_WRONLY | O_CREAT | O_APPEND;
+            target = STDERR_FILENO;
         } else {
-            continue;
+            continue;  /* an ordinary word */
         }
 
-        const char *file;
-        int skip;  /* how many words to remove from args */
-        size_t len = strlen(op);
-        if (word[len] != '\0') {
-            file = word + len;  /* "<file": name follows the operator */
-            skip = 1;
-        } else {
-            file = args[i + 1];  /* "< file": name is the next word */
-            skip = 2;
-            if (!file) {
-                fprintf(stderr, "vsh: missing file name after '%s'\n", op);
-                return -1;
-            }
+        const char *file = args[i + 1];
+        if (!file || is_operator(file)) {
+            fprintf(stderr, "vsh: missing file name after '%s'\n", op);
+            return -1;
         }
 
         int fd = open(file, flags, 0644);  /* 0644 is only used if created */
@@ -118,18 +216,19 @@ static int apply_redirect(char **args) {
         }
         close(fd);
 
-        /* Shift the rest of args left, over the removed words. */
+        /* Shift the rest of args left, over the operator and file name. */
         int j = i;
         do {
-            args[j] = args[j + skip];
+            args[j] = args[j + 2];
         } while (args[j++] != NULL);
         i--;  /* look at position i again: it now holds a new word */
     }
     return 0;
 }
 
-/* In a child process: set up any "<", ">" or ">>" redirection, then
- * replace this process with the program in args. Never returns. */
+/* In a child process: set up any "<", ">", ">>", "2>" or "2>>"
+ * redirection, then replace this process with the program in args.
+ * Never returns. */
 static void exec_child(char **args) {
     if (apply_redirect(args) != 0) _exit(1);
     if (args[0] == NULL) _exit(0);  /* just "> file": file is created */
@@ -153,7 +252,7 @@ static void run_program(char **args) {
 /* True if args has at least one "|" word. */
 static int has_pipe(char **args) {
     for (int i = 0; args[i]; i++) {
-        if (strcmp(args[i], "|") == 0) return 1;
+        if (args[i] == OP_PIPE) return 1;
     }
     return 0;
 }
@@ -168,7 +267,7 @@ static void close_all_pipes(int fds[][2], int npipes) {
 
 /* Run "cmd1 | cmd2 | ... | cmdN". Splits args at each "|", forks one
  * child per command, and connects them with N-1 pipes. Each child still
- * applies its own "<", ">" or ">>" with apply_redirect. Built-ins are
+ * applies its own redirection (like "<" or "2>") with apply_redirect. Built-ins are
  * not run here; the caller only reaches this for a line that has "|". */
 static void run_pipeline(char **args) {
     char **stage[MAX_STAGES];
@@ -176,7 +275,7 @@ static void run_pipeline(char **args) {
 
     stage[n++] = args;
     for (int i = 0; args[i]; i++) {
-        if (strcmp(args[i], "|") == 0) {
+        if (args[i] == OP_PIPE) {
             args[i] = NULL;  /* end this command where the "|" was */
             if (n >= MAX_STAGES) {
                 fprintf(stderr, "vsh: too many pipes\n");
@@ -262,8 +361,11 @@ int main(void) {
             break;
         }
 
-        char **args = split_line(line);
+        char *words;  /* buffer holding the words; freed with args */
+        int syntax_error;
+        char **args = split_line(line, &words, &syntax_error);
         if (!args) {
+            if (syntax_error) continue;  /* message printed; skip line */
             fprintf(stderr, "vsh: out of memory\n");
             break;
         }
@@ -274,6 +376,7 @@ int main(void) {
             run_pipeline(args);  /* built-ins are not run in a pipeline */
         } else if (strcmp(args[0], "exit") == 0) {
             free(args);
+            free(words);
             break;
         } else if (strcmp(args[0], "cd") == 0) {
             builtin_cd(args);
@@ -281,6 +384,7 @@ int main(void) {
             run_program(args);
         }
         free(args);
+        free(words);
     }
 
     free(line);

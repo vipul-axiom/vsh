@@ -1,0 +1,9 @@
+vsh> a b
+vsh> a|b
+vsh> x > y < >> 2>
+vsh> onetwo threefour
+vsh> [a  b]
+[c]
+vsh> vsh: missing closing '"'
+vsh> after
+vsh> 

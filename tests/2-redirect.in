@@ -1,0 +1,12 @@
+ls /nonexistent_vsh 2> err.txt
+wc -l < err.txt
+ls /nonexistent_vsh 2>err.txt
+wc -l <err.txt
+nosuchcommand_vsh 2> err2.txt
+cat err2.txt
+echo kept 2> err.txt
+wc -c < err.txt
+nosuchcommand_vsh 2>> err2.txt
+wc -l < err2.txt
+nosuchcommand_vsh 2> err3.txt | echo piped
+cat err3.txt

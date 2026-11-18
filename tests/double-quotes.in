@@ -1,0 +1,7 @@
+echo "a b"
+echo "a|b"
+echo "x > y" "<" ">>" "2>"
+echo one"two three"four
+printf "[%s]\n" "a  b" c
+echo "oops
+echo after
